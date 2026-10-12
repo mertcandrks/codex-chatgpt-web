@@ -690,6 +690,13 @@ test("startup recovery can restore the Codex route without requiring a healthy l
   assert.deepEqual(fixture.calls, ["route status", "route disconnect --for-runtime-recovery", "route status"]);
 });
 
+test("normal launcher quit restores the native route and permits reconnect on the next launch", async () => {
+  const fixture = bridgeFixture({ active: true });
+  const result = await fixture.host.restoreBridgeRoute("launcher-quit");
+  assert.equal(result.active, false);
+  assert.deepEqual(fixture.calls, ["route status", "route disconnect --for-runtime-recovery", "route status"]);
+});
+
 test("failed runtime cleanup during removal still restores the previous Codex route", async () => {
   const calls = [];
   const config = { mode: "full", browserHost: "launcher", releaseVersion: "1.1.2" };

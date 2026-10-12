@@ -10,6 +10,39 @@ const electronMain = fs.readFileSync(path.join(launcherRoot, "electron", "main.c
 const browserHostSource = fs.readFileSync(path.join(launcherRoot, "electron", "browser-host.cjs"), "utf8");
 const preloadSource = fs.readFileSync(path.join(launcherRoot, "electron", "preload.cjs"), "utf8");
 
+test("launcher quit restores native routing before stopping the bridge and never touches DEV routing", async () => {
+  const vm = require("node:vm");
+  const source = electronMain.slice(electronMain.indexOf("async function requestQuit("), electronMain.indexOf("async function start("));
+  for (const scenario of ["production", "restore-failure", "development"]) {
+    const calls = [];
+    const context = vm.createContext({
+      IS_DEV_PROFILE: scenario === "development", shutdownInProgress: false, exitCommitted: false, quitting: false,
+      runtimeHost: { currentOperation: () => null, restoreBridgeRoute: async name => {
+        calls.push(name);
+        if (scenario === "restore-failure") throw new Error("route changed externally");
+      } },
+      runtimeSupervisor: { shutdown: async () => calls.push("shutdown") },
+      browserHost: { currentOperation: () => null, persistSession: async () => calls.push("persist"), destroy: () => calls.push("destroy") },
+      browserControl: { close: async () => calls.push("control-close") },
+      stopCatalogVerificationMonitor() {}, app: { quit: () => calls.push("quit") },
+      showMainWindow() {}, publishOperation() {},
+    });
+    vm.runInContext(source, context);
+    const result = await context.requestQuit();
+    if (scenario === "restore-failure") {
+      assert.equal(result.ok, false);
+      assert.match(result.message, /changed externally/);
+      assert.deepEqual(calls, ["launcher-quit"]);
+    } else {
+      assert.equal(result.ok, true);
+      assert.deepEqual(calls, [
+        ...(scenario === "production" ? ["launcher-quit"] : []),
+        "shutdown", "persist", "destroy", "control-close", "quit",
+      ]);
+    }
+  }
+});
+
 test("Bigger Context waits for startup and route recovery without invalidating healthy setup", async () => {
   const vm = require("node:vm");
   for (const fails of [false, true]) {
