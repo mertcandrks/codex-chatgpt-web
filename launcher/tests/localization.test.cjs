@@ -15,8 +15,8 @@ const koreanReadme = read("README.ko.md");
 const languages = require("../electron/languages.json");
 const appSource = read("launcher", "src", "App.tsx");
 
-function loadI18nModule() {
-  const source = read("launcher", "src", "i18n.ts");
+function loadI18nModule(file = "i18n.ts") {
+  const source = read("launcher", "src", file);
   const output = ts.transpileModule(source, {
     compilerOptions: {
       module: ts.ModuleKind.CommonJS,
@@ -32,6 +32,29 @@ function commandFences(source) {
   return [...source.matchAll(/```(bash|powershell)\r?\n([\s\S]*?)```/g)]
     .map((match) => `${match[1]}\n${match[2].replace(/\r\n/g, "\n").trim()}`);
 }
+
+test("Turkish UI and limits copy are complete and preserve interpolation tokens", () => {
+  const { copyFor } = loadI18nModule();
+  const { limitsCopyFor } = loadI18nModule("limits-copy.ts");
+  assert.equal(languages.tr.label, "Türkçe");
+  assert.equal(languages.tr.locale, "tr-TR");
+  assert.equal(copyFor("tr").settings, "Ayarlar");
+  assert.equal(limitsCopyFor("tr").title, "Kullanım sınırları");
+  for (const getCopy of [copyFor, limitsCopyFor]) {
+    const english = getCopy("en");
+    const turkish = getCopy("tr");
+    assert.deepEqual(Object.keys(turkish).sort(), Object.keys(english).sort());
+    for (const key of Object.keys(english)) {
+      assert.ok(turkish[key].trim(), key);
+      assert.deepEqual(
+        [...turkish[key].matchAll(/\{\w+\}/g)].map(match => match[0]).sort(),
+        [...english[key].matchAll(/\{\w+\}/g)].map(match => match[0]).sort(),
+        key,
+      );
+    }
+  }
+  assert.equal(copyFor("en").settings, "Settings");
+});
 
 function linkTargets(source) {
   const markdown = [...source.matchAll(/\]\(([^)\s]+)(?:\s+"[^"]*")?\)/g)].map((match) => match[1]);

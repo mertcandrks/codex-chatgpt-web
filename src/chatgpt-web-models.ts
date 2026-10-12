@@ -577,6 +577,73 @@ export function availableChatGptWebModelRoutes(
     && (!route.requiresExtraHigh || capabilities.extraHighAvailable));
 }
 
+export interface ChatGptWebRouteAvailability {
+  available: boolean;
+  reason?: string;
+}
+
+/**
+ * Explain why a Web route is not currently usable without changing the route list itself.
+ * The catalog can show every bridge-owned row while request validation remains fail-closed.
+ */
+export function chatGptWebRouteAvailability(
+  route: ChatGptWebModelRoute,
+  capabilities: ChatGptWebAccountCapabilities,
+): ChatGptWebRouteAvailability {
+  if (route.interactionMode === "manual") {
+    if (capabilities.browserInteractionMode !== "manual") {
+      return { available: false, reason: "Zero Risk mode is not enabled." };
+    }
+    if (route === CHATGPT_WEB_ZERO_RISK_PRO_MODEL_ROUTE && !capabilities.zeroRiskProEnabled) {
+      return { available: false, reason: "Zero Risk Pro is not enabled." };
+    }
+    return { available: true };
+  }
+  if (capabilities.browserInteractionMode === "manual") {
+    return { available: false, reason: "Automatic Web models are unavailable in Zero Risk mode." };
+  }
+  if (route.backendModel === CHATGPT_WEB_LUNA_BACKEND_MODEL) {
+    return capabilities.solAvailable
+      ? { available: false, reason: "Luna is available only while the account has no Sol selector." }
+      : { available: true };
+  }
+  if (!capabilities.solAvailable) {
+    return {
+      available: false,
+      reason: "ChatGPT currently exposes Luna/Reserve; Sol access is not currently available.",
+    };
+  }
+  if (route.requiresPro && !capabilities.proAvailable) {
+    return { available: false, reason: "This route requires a Pro-capable ChatGPT account." };
+  }
+  if (route.requiresExtraHigh && capabilities.extraHighAvailable !== true) {
+    return { available: false, reason: "Extra High is not currently available for this account." };
+  }
+  return { available: true };
+}
+
+/**
+ * Return every bridge-owned automatic route for catalog display. Availability is reported on the
+ * generated row; `requireChatGptWebModelRoute` still enforces account capability before sending.
+ */
+export function catalogChatGptWebModelRoutes(
+  capabilities: ChatGptWebAccountCapabilities,
+  includeLegacy = false,
+): readonly ChatGptWebModelRoute[] {
+  if (capabilities.browserInteractionMode === "manual") {
+    return availableChatGptWebModelRoutes(capabilities, includeLegacy);
+  }
+  const solRoutes = includeLegacy
+    ? [...CHATGPT_WEB_MODEL_ROUTES, ...CHATGPT_WEB_LEGACY_MODEL_ROUTES]
+    : [...CHATGPT_WEB_MODEL_ROUTES];
+  if (capabilities.solAvailable) return solRoutes;
+  return [
+    ...CHATGPT_WEB_LUNA_MODEL_ROUTES,
+    ...(includeLegacy ? [CHATGPT_WEB_LEGACY_LUNA_MODEL_ROUTE, CHATGPT_WEB_LUNA_THINK_MODEL_ROUTE] : []),
+    ...solRoutes,
+  ];
+}
+
 export function chatGptWebRouteEfforts(
   route: ChatGptWebModelRoute,
   capabilities: ChatGptWebAccountCapabilities,

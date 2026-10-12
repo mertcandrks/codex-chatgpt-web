@@ -197,6 +197,7 @@ test("a complete authenticated composer with no effort selector is Luna-only", a
     last() { return this; },
     count: async () => 1,
     isVisible: async () => true,
+    isEditable: async () => true,
     locator: () => composerForm,
   };
   const page = {
@@ -228,6 +229,7 @@ test("a transient effort control does not turn a Luna-only account into Sol", as
     filter() { return this; },
     last() { return this; },
     count: async () => 1,
+    isEditable: async () => true,
     locator: () => composerForm,
   };
   const page = {
@@ -240,6 +242,21 @@ test("a transient effort control does not turn a Luna-only account into Sol", as
     stableAbsenceMs: 0,
   })).resolves.toEqual({ solAvailable: false, extraHighAvailable: false, proAvailable: false });
   expect(visibilityReads).toBe(2);
+});
+
+test("a disabled composer cannot be mistaken for a Luna-only account", async () => {
+  const effortButton = { filter() { return this; }, isVisible: async () => false };
+  const composerForm = { count: async () => 1, locator: () => effortButton };
+  const composer = {
+    filter() { return this; },
+    count: async () => 1,
+    isEditable: async () => false,
+    locator: () => composerForm,
+  };
+  const page = { locator: () => composer, evaluate: async () => true };
+  await expect(detectChatGptAccountCapabilities(page as never, {
+    selectorTimeoutMs: 100, stableAbsenceMs: 0,
+  })).rejects.toThrow("did not reach a stable composer state");
 });
 
 function reasoningPicker(options: { max?: string; locks?: Array<string | null>; delay?: number; missing?: boolean; loseSelectionOnClose?: boolean; power?: boolean; disabled?: string; staleAttributeMax?: string; maxAfterClose?: string; locksAfterClose?: Array<string | null> } = {}) {

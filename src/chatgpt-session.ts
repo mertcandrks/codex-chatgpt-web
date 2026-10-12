@@ -320,7 +320,8 @@ export async function detectChatGptAccountCapabilities(
     const composerReady = await composers.count().then(count => count === 1).catch(() => false);
     const formReady = await composerForm.count().then(count => count === 1).catch(() => false);
     const documentReady = await page.evaluate(() => document.readyState === "complete").catch(() => false);
-    if (composerReady && formReady && documentReady) {
+    const composerEditable = composerReady && await composer.isEditable().catch(() => false);
+    if (composerReady && composerEditable && formReady && documentReady) {
       absenceSince ??= Date.now();
     } else {
       absenceSince = undefined;

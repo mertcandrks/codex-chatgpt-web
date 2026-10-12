@@ -19,6 +19,11 @@
     "marker": "日",
     "locale": "ja-JP"
   },
+  "tr": {
+    "label": "Türkçe",
+    "marker": "TR",
+    "locale": "tr-TR"
+  },
   "ko": {
     "label": "한국어",
     "marker": "한",

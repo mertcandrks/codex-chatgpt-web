@@ -862,7 +862,7 @@ class RuntimeHost {
 
   async restoreBridgeRouteWithinOperation(operationName) {
     const current = await this.bridgeStatus(operationName);
-    const forRuntimeRecovery = operationName === "runtime-start-fail-safe";
+    const forRuntimeRecovery = operationName === "runtime-start-fail-safe" || operationName === "launcher-quit";
     if (!current.installed || (!current.active && (forRuntimeRecovery || !current.reconnectOnStartup))) return current;
     const disconnected = await this.run(operationName, ["route", "disconnect",
       ...(forRuntimeRecovery ? ["--for-runtime-recovery"] : [])], {

@@ -62,6 +62,25 @@ afterEach(() => {
 });
 
 describe("reversible native Codex route integration", () => {
+  test("explicit repair preserves native model and million-token settings after an external route removal", () => {
+    const { codexHome } = fixture();
+    const configPath = join(codexHome, "config.toml");
+    const original = 'model = "gpt-6.1-sol"\nmodel_context_window = 1050000\nmodel_auto_compact_token_limit = 950000\n';
+    writeFileSync(configPath, original);
+    const config = nativeConfig("browser-only");
+    installCodexIntegration(config);
+    writeFileSync(configPath, readFileSync(configPath, "utf8").replace(/^openai_base_url\s*=.*\r?\n/gm, ""));
+    expect(inspectCodexIntegration().errors.length).toBeGreaterThan(0);
+    installCodexIntegration(config, { replaceExistingRoute: true });
+    deactivateCodexIntegration({ forRuntimeRecovery: true });
+    const restored = Bun.TOML.parse(readFileSync(configPath, "utf8")) as Record<string, unknown>;
+    expect(restored.model).toBe("gpt-6.1-sol");
+    expect(restored.model_context_window).toBe(1050000);
+    expect(restored.model_auto_compact_token_limit).toBe(950000);
+    expect(restored.openai_base_url).toBeUndefined();
+    expect(inspectCodexIntegration().errors).toEqual([]);
+  });
+
   test("route install, update, switching and removal preserve a symlinked shared Codex config", () => {
     const { root, codexHome } = fixture();
     const shared = join(root, "shared");

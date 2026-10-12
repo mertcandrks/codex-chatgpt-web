@@ -1,7 +1,8 @@
 import type { AppConfig } from "./config";
 import type { CodexModelContextOverride } from "./codex-integration";
 import {
-  availableChatGptWebModelRoutes,
+  catalogChatGptWebModelRoutes,
+  chatGptWebRouteAvailability,
   chatGptWebRouteEfforts,
   CHATGPT_WEB_MODEL_PREFIX,
   resolveChatGptWebContextLimits,
@@ -93,6 +94,26 @@ function routedSubagentVersion(template: JsonObject, config: AppConfig): string 
   return typeof template.multi_agent_version === "string" ? template.multi_agent_version : undefined;
 }
 
+function catalogConfigForRoute(
+  route: ChatGptWebModelRoute,
+  config: AppConfig,
+): AppConfig {
+  const availability = chatGptWebRouteAvailability(route, config);
+  if (availability.available || route.interactionMode === "manual") return config;
+  if (route.backendModel === "gpt-5.6-luna") return config;
+  // Use a stable standard budget to describe an unavailable Sol row. This is catalog metadata only;
+  // request validation still uses the real account capabilities and rejects unavailable routes.
+  return {
+    ...config,
+    solAvailable: true,
+    extraHighAvailable: config.extraHighAvailable === true
+      || route.requiresExtraHigh === true
+      || route.supportedCodexEfforts?.includes("xhigh") === true,
+    proAvailable: config.proAvailable || route.requiresPro === true,
+    experimentalBiggerContext: false,
+  };
+}
+
 export function buildChatGptWebModel(
   templateValue: unknown,
   route: ChatGptWebModelRoute,
@@ -103,13 +124,15 @@ export function buildChatGptWebModel(
   if (!templateSlug || templateSlug.startsWith(CHATGPT_WEB_MODEL_PREFIX)) {
     throw new Error("ChatGPT Web model template must be a native Codex model");
   }
+  const availability = chatGptWebRouteAvailability(route, config);
+  const catalogConfig = catalogConfigForRoute(route, config);
   const modelFamily = route.interactionMode === "automatic" ? route.modelFamily : undefined;
-  const limits = resolveChatGptWebContextLimits(route.backendModel, route.adapterEffort, config, modelFamily);
-  const efforts = chatGptWebRouteEfforts(route, config);
+  const limits = resolveChatGptWebContextLimits(route.backendModel, route.adapterEffort, catalogConfig, modelFamily);
+  const efforts = chatGptWebRouteEfforts(route, catalogConfig);
   for (const effort of efforts) {
     const adapterEffort = route.supportedCodexEfforts ? effort : route.adapterEffort;
     if (adapterEffort === "ultra") throw new Error("Ultra is not a browser effort");
-    const candidate = resolveChatGptWebContextLimits(route.backendModel, adapterEffort, config, modelFamily);
+    const candidate = resolveChatGptWebContextLimits(route.backendModel, adapterEffort, catalogConfig, modelFamily);
     if (JSON.stringify(candidate) !== JSON.stringify(limits)) {
       throw new Error(`Cannot group different context budgets under ${route.slug}`);
     }
@@ -119,8 +142,10 @@ export function buildChatGptWebModel(
   const model: JsonObject = {
     ...structuredClone(template),
     slug: route.slug,
-    display_name: route.displayName,
-    description: route.description,
+    display_name: availability.available ? route.displayName : `${route.displayName} [Unavailable]`,
+    description: availability.available
+      ? route.description
+      : `${route.description} Unavailable: ${availability.reason}`,
     input_modalities: route.interactionMode === "manual" ? ["text"] : ["text", "image"],
     visibility: route.legacy ? "hide" : "list",
     // These slugs are implemented by this local Responses-compatible bridge. Marking them false
@@ -200,7 +225,7 @@ export function augmentNativeModelCatalog(
       }
     }
   }
-  const webModels = availableChatGptWebModelRoutes(config, true)
+  const webModels = catalogChatGptWebModelRoutes(config, true)
     .map(route => buildChatGptWebModel(template, route, config));
   return {
     ...structuredClone(catalog),

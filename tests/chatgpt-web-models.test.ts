@@ -15,6 +15,8 @@ import {
   CHATGPT_WEB_ZERO_RISK_PRO_BACKEND_MODEL,
   CHATGPT_WEB_ZERO_RISK_PRO_MODEL_ROUTE,
   CHATGPT_WEB_MODEL_ROUTES,
+  catalogChatGptWebModelRoutes,
+  chatGptWebRouteAvailability,
   requireChatGptWebModelRoute,
   resolveChatGptWebContextLimits,
   resolveChatGptWebTransportLimits,
@@ -97,6 +99,20 @@ describe("fixed ChatGPT Web model routes", () => {
       solAvailable: true,
       extraHighAvailable: false, proAvailable: false,
     })).toThrow("only available for Luna-only accounts");
+  });
+
+  test("catalog keeps special Web rows visible while Reserve makes them unavailable", () => {
+    const reserve = { solAvailable: false, extraHighAvailable: false, proAvailable: false };
+    expect(catalogChatGptWebModelRoutes(reserve).map(route => route.slug)).toEqual([
+      "chatgpt-web/gpt-5.6-luna",
+      ...CHATGPT_WEB_MODEL_ROUTES.map(route => route.slug),
+    ]);
+    expect(chatGptWebRouteAvailability(CHATGPT_WEB_MODEL_ROUTES[1]!, reserve)).toEqual({
+      available: false,
+      reason: "ChatGPT currently exposes Luna/Reserve; Sol access is not currently available.",
+    });
+    expect(() => requireChatGptWebModelRoute(CHATGPT_WEB_MODEL_ROUTES[1]!.slug, reserve))
+      .toThrow("Luna-only account");
   });
 
   test("Zero Risk exposes one generic route independent of account capabilities", () => {

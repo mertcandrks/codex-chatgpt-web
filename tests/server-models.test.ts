@@ -101,7 +101,7 @@ test("proxies official /models auth and query, then appends grouped and legacy W
   }
 });
 
-test("Luna-only account exposes no paid ChatGPT Web routes", async () => {
+test("Luna-only account still exposes paid Web routes with explicit availability errors", async () => {
   const config = defaultConfig("browser-only");
   config.solAvailable = false;
   const response = await modelsRequest(
@@ -122,7 +122,14 @@ test("Luna-only account exposes no paid ChatGPT Web routes", async () => {
   );
   const body = await response.json() as { models: Array<{ slug: string }> };
   expect(body.models.filter(model => model.slug.startsWith("chatgpt-web/")).map(model => model.slug))
-    .toEqual(["chatgpt-web/gpt-5.6-luna", "chatgpt-web/luna", "chatgpt-web/think"]);
+    .toEqual([
+      "chatgpt-web/gpt-5.6-luna", "chatgpt-web/luna", "chatgpt-web/think",
+      "chatgpt-web/gpt-6-sol-instant", "chatgpt-web/gpt-6-sol",
+      "chatgpt-web/gpt-5.6-sol-instant", "chatgpt-web/gpt-5.6-sol",
+      "chatgpt-web/gpt-5.6-pro", "chatgpt-web/gpt-6-pro",
+      "chatgpt-web/light", "chatgpt-web/medium", "chatgpt-web/high",
+      "chatgpt-web/extra-high", "chatgpt-web/pro",
+    ]);
 });
 
 test("Zero Risk returns one generic Web row without using scanned capabilities", async () => {
@@ -195,7 +202,7 @@ test("ChatGPT-only native catalog rows do not turn model discovery into a 502", 
   const body = await response.json() as { models: Array<{ slug: string; supported_in_api?: boolean }> };
   expect(body.models[0]).toMatchObject({ slug: "gpt-chatgpt-only", supported_in_api: false });
   expect(body.models.filter(model => model.slug.startsWith("chatgpt-web/")))
-    .toHaveLength(7);
+    .toHaveLength(11);
   expect(body.models.filter(model => model.slug.startsWith("chatgpt-web/"))
     .every(model => model.supported_in_api === true)).toBe(true);
 });
