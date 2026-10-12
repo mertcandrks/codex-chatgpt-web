@@ -231,6 +231,22 @@ function trayImage() {
 }
 
 const NATIVE_COPY = Object.freeze({
+  "tr": Object.freeze({
+    openLauncher: "Codex Web GPT'yi aç",
+    quit: "Çıkış",
+    exportDiagnostics: "Gizliliği koruyan tanılamayı dışa aktar",
+    cancel: "İptal",
+    remove: "Kaldır",
+    removeTitle: "Codex Web GPT'yi kaldır",
+    removeMessage: "ChatGPT Web modelleri Codex'ten kaldırılıp önceki model rotası geri yüklensin mi?",
+    removeDetail: "Başlatıcının ChatGPT oturum profili korunur. Codex'in bir kez yeniden başlatılması gerekir.",
+    retry: "Yeniden dene",
+    startupTitle: "Codex Web GPT başlatılamadı",
+    startupDetail: "Yeniden deneme, kayıtlı ayarlarınızı veya ChatGPT profilinizi değiştirmeden başlatıcıyı açar.",
+    startupCleanupFailed: "Başlangıç temizliği başarısız",
+    catalogFailure: "Codex başlatıcıya ulaştı ancak model kataloğu yüklenemedi (HTTP {status}; {reason}). Ayrıntılar için Etkinlik'e bakın; sorun sürerse güvenli günlüğü dışa aktarın.",
+    catalogReady: "Codex model listesi yüklendi.",
+  }),
   "en": Object.freeze({
     openLauncher: "Open Codex Web GPT",
     quit: "Quit",
