@@ -361,10 +361,10 @@ function createTray(logger, language) {
 function showMainWindow() {
   // A Windows login launch may still be materializing the packaged runtime when the user opens
   // the desktop shortcut. Electron delivers `second-instance` immediately, before `createWindow`
-  // has produced anything to show. Preserve that foreground request until the real window reaches
-  // `ready-to-show`; otherwise the already-running `--hidden` instance silently consumes it.
+  // has produced anything to show. Queue the request until a window exists, but do not block
+  // an explicit foreground request on the renderer's first-paint signal.
   mainWindowShowRequested = true;
-  if ((!mainWindowReadyToShow && !startupFailed) || !mainWindow || mainWindow.isDestroyed()) return;
+  if (!mainWindow || mainWindow.isDestroyed()) return;
   mainWindowShowRequested = false;
   if (mainWindow.isMinimized()) mainWindow.restore();
   mainWindow.show();
@@ -419,7 +419,7 @@ function createWindow({ logger, stateStore, windowStatePath, startHidden }) {
     minHeight: MIN_WINDOW_BOUNDS.height,
     title: LAUNCHER_PROFILE.displayName,
     icon: APP_ICON_PATH,
-    show: false,
+    show: !startHidden,
     backgroundColor: isMac ? "#00000000" : "#181818",
     titleBarStyle: isMac ? "hiddenInset" : "hidden",
     transparent: isMac,
@@ -483,14 +483,17 @@ function createWindow({ logger, stateStore, windowStatePath, startHidden }) {
   for (const event of ["enter-full-screen", "leave-full-screen", "maximize", "unmaximize"]) {
     window.on(event, () => send("launcher:window-state-changed", windowStateSnapshot(window)));
   }
-  window.once("ready-to-show", () => {
+  const handleReadyToShow = () => {
+    if (mainWindow !== window || window.isDestroyed() || mainWindowReadyToShow) return;
     if (!state.onboardingComplete && !Number.isFinite(windowState.bounds.x)) window.center();
     if (windowState.maximized) window.maximize();
     if (windowState.fullscreen) window.setFullScreen(true);
     if (mainWindow === window) mainWindowReadyToShow = true;
     if (mainWindowShowRequested) showMainWindow();
     else if (!startHidden) window.show();
-  });
+  };
+  window.once("ready-to-show", handleReadyToShow);
+  window.webContents.once("did-finish-load", handleReadyToShow);
   trackWindowState(window, windowStatePath, (error) => {
     logger.warn("launcher.window_state_write_failed", {
       message: error instanceof Error ? error.message : String(error),
@@ -1294,6 +1297,8 @@ async function start() {
     });
   }
   await loadRenderer(mainWindow);
+  // A foreground launch must not depend on Chromium emitting its first-paint signal.
+  if (!startHidden) showMainWindow();
   if (!launcherSmokeTest) void updateController.checkOnce();
   if (launcherSmokeTest) {
     const smokeRuntimeRoot = runtimeRootProvider();

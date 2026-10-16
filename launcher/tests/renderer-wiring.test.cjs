@@ -146,24 +146,26 @@ test("closing the launcher follows the persisted background-runtime preference",
   assert.match(appSource, /setPreference\("keepRunningOnClose", checked\)/);
 });
 
-test("a foreground launch request survives hidden startup until the launcher window is ready", () => {
+test("a foreground request shows an existing window even if ready-to-show never fires", () => {
+  const vm = require("node:vm");
   const showMainWindow = electronMain.slice(
     electronMain.indexOf("function showMainWindow()"),
     electronMain.indexOf("async function openWebUrl"),
   );
-  assert.match(
-    showMainWindow,
-    /mainWindowShowRequested = true;[\s\S]*?!mainWindowReadyToShow[\s\S]*?mainWindowShowRequested = false;/,
-  );
-
-  const readyHandler = electronMain.slice(
-    electronMain.indexOf('window.once("ready-to-show"'),
-    electronMain.indexOf("trackWindowState(window", electronMain.indexOf('window.once("ready-to-show"')),
-  );
-  assert.match(
-    readyHandler,
-    /mainWindowReadyToShow = true;[\s\S]*?if \(mainWindowShowRequested\) showMainWindow\(\);/,
-  );
+  const calls = [];
+  const context = vm.createContext({ mainWindow: null, mainWindowReadyToShow: false,
+    mainWindowShowRequested: false, startupFailed: false });
+  vm.runInContext(showMainWindow, context);
+  context.showMainWindow();
+  assert.equal(context.mainWindowShowRequested, true, "request survives creation delay");
+  context.mainWindow = { isDestroyed: () => false, isMinimized: () => true,
+    restore: () => calls.push("restore"), show: () => calls.push("show"), focus: () => calls.push("focus") };
+  context.showMainWindow();
+  assert.deepEqual(calls, ["restore", "show", "focus"]);
+  assert.equal(context.mainWindowShowRequested, false);
+  context.mainWindow.isDestroyed = () => true;
+  context.showMainWindow();
+  assert.deepEqual(calls, ["restore", "show", "focus"], "destroyed window is not used");
 
   const secondInstance = electronMain.indexOf('app.on("second-instance", () => showMainWindow())');
   const runtimeMaterialization = electronMain.indexOf("await waitForPackagedRuntimeSource", secondInstance);
