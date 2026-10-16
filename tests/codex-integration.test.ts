@@ -62,6 +62,26 @@ afterEach(() => {
 });
 
 describe("reversible native Codex route integration", () => {
+  test("repeated launcher open and close preserves native settings and intervening user edits", () => {
+    const { codexHome } = fixture();
+    const file = join(codexHome, "config.toml");
+    writeFileSync(file, 'model = "gpt-6.1-sol"\nmodel_context_window = 1050000\nmodel_auto_compact_token_limit = 950000\n');
+    installCodexIntegration(nativeConfig("browser-only"));
+    deactivateCodexIntegration({ forRuntimeRecovery: true });
+    writeFileSync(file, readFileSync(file, "utf8") + 'approval_policy = "on-request"\n');
+    for (let cycle = 0; cycle < 2; cycle++) {
+      expect(activateCodexIntegration({ recoveryOnly: true }).active).toBe(true);
+      expect(inspectCodexIntegration().errors).toEqual([]);
+      expect(deactivateCodexIntegration({ forRuntimeRecovery: true }).active).toBe(false);
+      const restored = Bun.TOML.parse(readFileSync(file, "utf8")) as Record<string, unknown>;
+      expect(restored.openai_base_url).toBeUndefined();
+      expect(restored.model).toBe("gpt-6.1-sol");
+      expect(restored.model_context_window).toBe(1050000);
+      expect(restored.model_auto_compact_token_limit).toBe(950000);
+      expect(restored.approval_policy).toBe("on-request");
+    }
+  });
+
   test("explicit repair preserves native model and million-token settings after an external route removal", () => {
     const { codexHome } = fixture();
     const configPath = join(codexHome, "config.toml");

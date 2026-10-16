@@ -10,6 +10,14 @@ const electronMain = fs.readFileSync(path.join(launcherRoot, "electron", "main.c
 const browserHostSource = fs.readFileSync(path.join(launcherRoot, "electron", "browser-host.cjs"), "utf8");
 const preloadSource = fs.readFileSync(path.join(launcherRoot, "electron", "preload.cjs"), "utf8");
 
+test("custom build metadata reaches the UI and official updater protection", () => {
+  assert.equal(require("../package.json").codexWebGptCustomBuild, true);
+  assert.match(electronMain, /const IS_CUSTOM_BUILD = require\("\.\.\/package\.json"\)\.codexWebGptCustomBuild === true/);
+  assert.match(electronMain, /updateController = createUpdateController\(\{[\s\S]*?customBuild: IS_CUSTOM_BUILD/);
+  assert.match(electronMain, /packaged: app\.isPackaged,\s*customBuild: IS_CUSTOM_BUILD/);
+  assert.match(appSource, /snapshot\.customBuild \? " · Jarvvis" : ""/);
+});
+
 test("launcher quit restores native routing before stopping the bridge and never touches DEV routing", async () => {
   const vm = require("node:vm");
   const source = electronMain.slice(electronMain.indexOf("async function requestQuit("), electronMain.indexOf("async function start("));
@@ -551,6 +559,7 @@ test("catalog verification reports a failed request instead of requesting anothe
 test("browser preference IPC commits only after setup succeeds and refuses active browser work", async () => {
   const vm = require("node:vm");
   for (const [property, method, channel, nextChannel] of [
+    ["composerPredictionsEnabled", "setComposerPredictions", "launcher:composer-predictions", "launcher:skill-attachments"],
     ["experimentalFreshConversationPerTurn", "setFreshConversationPerTurn", "launcher:fresh-conversation-per-turn", "launcher:use-saved-chats"],
     ["useSavedChats", "setUseSavedChats", "launcher:use-saved-chats", "launcher:auto-approve-tool-calls"],
     ["autoApproveToolCalls", "setAutoApproveToolCalls", "launcher:auto-approve-tool-calls", "launcher:zero-risk-pro"],
@@ -559,8 +568,8 @@ test("browser preference IPC commits only after setup succeeds and refuses activ
       electronMain.indexOf(`handle("${channel}",`),
       electronMain.indexOf(`handle("${nextChannel}",`),
     );
-    const state = { experimentalFreshConversationPerTurn: false, useSavedChats: false, autoApproveToolCalls: false };
-    const config = { experimentalFreshConversationPerTurn: false, useSavedChats: false, autoApproveToolCalls: false };
+    const state = { composerPredictionsEnabled: false, experimentalFreshConversationPerTurn: false, useSavedChats: false, autoApproveToolCalls: false };
+    const config = { composerPredictionsEnabled: false, experimentalFreshConversationPerTurn: false, useSavedChats: false, autoApproveToolCalls: false };
     const events = [];
     let handler, finishSetup, setupFailure, calls = 0;
     const browserHost = { activeTraceId: "running-turn", currentOperation: () => null, turnTabs: new Map() };
@@ -623,7 +632,7 @@ test("fresh-conversation snapshot uses runtime configuration and mode switching 
     stateStore: { read: () => ({ ...state }), update: patch => Object.assign(state, patch) },
     browserHost: { activeTraceId: null, turnTabs: new Map(), currentOperation: () => null, snapshot: () => ({}),
       withInteractionModeChange: async (_mode, action) => action() },
-    validateBrowserInteractionMode: mode => mode, IS_DEV_PROFILE: false, send() {}, startCatalogVerificationMonitor() {},
+    validateBrowserInteractionMode: mode => mode, IS_DEV_PROFILE: false, IS_CUSTOM_BUILD: true, send() {}, startCatalogVerificationMonitor() {},
     LAUNCHER_PROFILE: { kind: "production", codexHome: "/fixture/codex" }, CORE_HOME: "/fixture/core",
     launcherUserData: "/fixture/launcher", logger: { recent: () => [] },
     GITHUB_URL: "", X_URL: "", CONNECTORS_URL: "", TUNNELS_URL: "", KEYS_URL: "",

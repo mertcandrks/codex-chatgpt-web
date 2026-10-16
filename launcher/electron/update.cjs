@@ -303,6 +303,7 @@ function createUpdateController({
   platform,
   arch,
   packaged,
+  customBuild = false,
   executablePath,
   runtimeExecutable,
   logsDirectory,
@@ -313,7 +314,7 @@ function createUpdateController({
 }) {
   const deps = { ...defaultDependencies(), ...dependencies };
   const supportedAsset = releaseAssetName(currentVersion, platform, arch);
-  let state = packaged && supportedAsset ? { status: "idle" } : { status: "disabled" };
+  let state = packaged && supportedAsset && !customBuild ? { status: "idle" } : { status: "disabled" };
   let checked = false;
   let failedChecks = 0;
   let pending = null;

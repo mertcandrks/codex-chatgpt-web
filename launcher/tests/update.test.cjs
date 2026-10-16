@@ -162,6 +162,18 @@ test("startup check runs once and exposes only a newer complete release", async 
   assert.deepEqual(published.map((state) => state.status), ["checking", "available"]);
 });
 
+test("custom builds cannot be replaced by the official updater", async () => {
+  let releaseRequests = 0;
+  const controller = createUpdateController({
+    currentVersion: "6.1.9", platform: "win32", arch: "x64", packaged: true,
+    customBuild: true,
+    dependencies: { fetchRelease: async () => { releaseRequests++; throw new Error("Must not fetch official release"); } },
+  });
+  assert.deepEqual(await controller.checkOnce(), { status: "disabled" });
+  await assert.rejects(controller.beginInstall(), /No launcher update is available/);
+  assert.equal(releaseRequests, 0);
+});
+
 test("a failed startup check is retried on a bounded schedule; a successful one is not repeated", async () => {
   const release = {
     tag_name: "v1.2.0",

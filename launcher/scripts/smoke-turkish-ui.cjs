@@ -22,7 +22,7 @@ async function main() {
         let state = { ...defaults, language: "tr", onboardingComplete: true,
           sessionRefreshReminderAt: "2099-01-01T00:00:00Z" };
         let onState = () => {};
-        const snapshot = { profile: "production", platform: "win32", packaged: false,
+        const snapshot = { profile: "production", platform: "win32", packaged: false, customBuild: true,
           version, profilePaths: { coreHome: "fixture", codexHome: "fixture", userData: "fixture" },
           connectorName: "Codex Native2", connectorNames: { automatic: "Codex Native2", manual: "Codex Zero Risk" },
           mcpCredentialsConfigured: false, browser: null, logs: [], operation: null,
@@ -56,6 +56,7 @@ async function main() {
         await openSidebar();
         await page.getByRole("button", { name: navigation, exact: true }).click();
         await page.getByRole("heading", { name: heading, exact: true }).waitFor();
+        if (name === "settings") assert.match(await page.locator(".about-row").innerText(), /Jarvvis/);
         assert.equal(await page.locator("html").getAttribute("lang"), "tr");
         assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth), false);
         await page.screenshot({ path: path.join(output, `${name}-${viewport.width}.png`), fullPage: true });

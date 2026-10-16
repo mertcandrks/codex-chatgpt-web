@@ -1779,6 +1779,17 @@ function SettingsSurface({
       setBusy(false);
     }
   };
+  const setComposerPredictions = async (enabled: boolean) => {
+    setBusy(true);
+    setError(null);
+    try {
+      updateState(await api!.setComposerPredictions(enabled));
+    } catch (cause) {
+      setError(messageOf(cause));
+    } finally {
+      setBusy(false);
+    }
+  };
   const setSkillAttachments = async (enabled: boolean) => {
     setBusy(true);
     setError(null);
@@ -1927,6 +1938,13 @@ function SettingsSurface({
             onChange={(checked) => void setBiggerContext(checked)}
           />
         </SettingRow>
+        <SettingRow body={copy.composerPredictionsBody} label={copy.composerPredictions}>
+          <Switch
+            checked={snapshot.state.composerPredictionsEnabled}
+            disabled={busy || !snapshot.state.coreSetupComplete}
+            onChange={(checked) => void setComposerPredictions(checked)}
+          />
+        </SettingRow>
         <SettingRow body={snapshot.state.browserInteractionMode === "manual"
           ? copy.manualSkillAttachmentsUnavailable : copy.skillAttachmentsBody} label={copy.skillAttachments}>
           <Switch
@@ -2002,7 +2020,7 @@ function SettingsSurface({
           <strong>{copy.product}</strong>
           <small>
             {devProfile ? `${copy.devBadge} · ${snapshot.profilePaths.coreHome} · ` : ""}
-            {platformLabel(snapshot.platform)} · v{snapshot.version}
+            {platformLabel(snapshot.platform)} · v{snapshot.version}{snapshot.customBuild ? " · Jarvvis" : ""}
           </small>
         </span>
       </div>
