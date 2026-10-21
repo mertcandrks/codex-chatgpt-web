@@ -358,6 +358,8 @@ class RuntimeSupervisor {
     this.daemon = null;
     this.tunnel = null;
     this.stopping = false;
+    this.nativeBackground = false;
+    this.backgroundTransition = null;
     this.startPromise = null;
     this.stopPromise = null;
     this.restartHistory = { daemon: [], tunnel: [] };
@@ -540,7 +542,8 @@ class RuntimeSupervisor {
         error ? `runtime.${name}_spawn_failed` : `runtime.${name}_exited`,
         error ? { message: error.message } : { code, signal },
       );
-      if (!expected && restartable && statePersisted) this.scheduleRecovery(name);
+      if (!expected && restartable && statePersisted
+        && !(this.nativeBackground && name === "tunnel")) this.scheduleRecovery(name);
     };
     child.once("error", (error) => {
       if (!Number.isInteger(child.pid)) {
@@ -1065,7 +1068,8 @@ class RuntimeSupervisor {
       [...managedTunnelConnectArgs(config, invocation), "--control-plane-base-url", connection.baseURL],
       TUNNEL_START_TIMEOUT_MS,
       "Tunnel managed startup",
-      connection.env,
+      // Finish initialization before another chat can call the shared MCP server.
+      { ...connection.env, MCP_STDIO_SEND_INITIALIZED_NOTIFICATION: "true" },
     );
   }
 
@@ -1075,7 +1079,7 @@ class RuntimeSupervisor {
     this.tunnelMonitorObservationUnavailable = false;
     const generation = this.tunnelMonitorGeneration;
     const recordFailure = (message, immediate = false) => {
-      if (this.stopping || generation !== this.tunnelMonitorGeneration) return;
+      if (this.stopping || this.nativeBackground || generation !== this.tunnelMonitorGeneration) return;
       if (immediate) this.tunnelMonitorFailures = TUNNEL_MONITOR_FAILURE_THRESHOLD - 1;
       this.tunnelMonitorFailures += 1;
       this.logger.warn("runtime.tunnel_monitor_unhealthy", {
@@ -1091,7 +1095,7 @@ class RuntimeSupervisor {
       this.scheduleRecovery("tunnel");
     };
     this.tunnelMonitorTimer = setInterval(() => {
-      if (this.stopping
+      if (this.stopping || this.nativeBackground
         || generation !== this.tunnelMonitorGeneration
         || this.tunnelMonitorInFlight
         || this.restartTimers.tunnel) return;
@@ -1181,6 +1185,8 @@ class RuntimeSupervisor {
   }
 
   async startIfConfigured() {
+    if (this.backgroundTransition) await this.backgroundTransition;
+    if (this.nativeBackground) return { status: "native-background" };
     if (this.stopPromise) await this.stopPromise;
     if (this.startPromise) return this.startPromise;
     this.startPromise = this.startConfigured();
@@ -1317,7 +1323,7 @@ class RuntimeSupervisor {
   }
 
   scheduleRecovery(name) {
-    if (this.stopping) return;
+    if (this.stopping || (name === "tunnel" && (this.nativeBackground || this.backgroundTransition))) return;
     if (this.restartTimers[name]) return;
     const attempts = this.recordRestart(name);
     if (attempts > MAX_RESTARTS_PER_WINDOW) {
@@ -1342,7 +1348,7 @@ class RuntimeSupervisor {
   }
 
   async recover(name) {
-    if (this.stopping) return;
+    if (this.stopping || (this.nativeBackground && name === "tunnel")) return;
     const config = this.readConfig();
     if (!config) return;
     this.publishOperation?.({ name: "runtime-recovery", status: "running", message: `Restarting ${name}` });
@@ -1353,11 +1359,11 @@ class RuntimeSupervisor {
     else if (tunnelOnly) throw new Error("DEV runtime cannot recover a Responses daemon");
     else await this.startDaemon(config);
     if (!tunnelOnly && !this.daemon) throw new Error("Responses proxy is unavailable after runtime recovery");
-    if (config.mode === "full" && !this.tunnel) {
+    if (config.mode === "full" && !this.tunnel && !this.nativeBackground) {
       throw new Error("Tunnel runtime is unavailable after runtime recovery");
     }
     if (!tunnelOnly) await this.waitForProxy(config);
-    if (config.mode === "full") {
+    if (config.mode === "full" && !this.nativeBackground) {
       await this.waitForTunnel(config, TUNNEL_START_TIMEOUT_MS, "runtime-recovery");
     }
     if (!this.tryWriteState("ready")) {
@@ -1442,8 +1448,128 @@ class RuntimeSupervisor {
       || !await this.proxyHealth(config, 2_000, daemon.pid, true)) {
       return false;
     }
-    if (config.mode !== "full") return true;
+    if (config.mode !== "full" || this.nativeBackground) return true;
     return Boolean(this.tunnel && await this.tunnelHealth(config));
+  }
+
+  async enterNativeBackground() {
+    if (this.nativeBackground) return { status: "native-background" };
+    if (this.backgroundTransition || this.startPromise || this.stopPromise || this.stopping) {
+      throw new Error("Runtime lifecycle operation is already in progress");
+    }
+    if (this.restartTimers.tunnel || [...this.recoveryTasks].length > 0) {
+      throw new Error("Wait for runtime recovery to finish before entering native background mode");
+    }
+    const transition = this.performEnterNativeBackground();
+    this.backgroundTransition = transition;
+    try { return await transition; } finally {
+      if (this.backgroundTransition === transition) this.backgroundTransition = null;
+    }
+  }
+
+  async performEnterNativeBackground() {
+    const config = this.readConfig();
+    if (!config || config.mode !== "full" || this.launcherProfile !== "production") {
+      throw new Error("Native background mode requires a configured production runtime");
+    }
+    const daemon = this.daemon;
+    if (!daemon || !Number.isInteger(daemon.pid) || daemon.exitCode !== null
+      || daemon.signalCode !== null || !await this.proxyHealth(config, 2_000, daemon.pid, true)) {
+      throw new Error("Cannot preserve native routing without a verified owned daemon");
+    }
+    let drained = false;
+    let tunnelStopped = false;
+    this.nativeBackground = true;
+    this.stopTunnelMonitor();
+    try {
+      drained = await this.acquireDrain(config);
+      await this.stopTunnelGracefully(config);
+      tunnelStopped = true;
+      const resumed = await this.control(config, "resume");
+      if (resumed.status !== "ok" || resumed.accepting_turns !== true) {
+        throw new Error("daemon did not acknowledge resume after stopping the Web tunnel");
+      }
+      await this.waitForProxy(config);
+      this.tryWriteState("ready");
+      return { status: "native-background", daemonPid: daemon.pid };
+    } catch (error) {
+      const failures = [];
+      let tunnelRestored = !tunnelStopped;
+      let daemonResumed = !drained;
+      if (tunnelStopped) {
+        try {
+          await this.startTunnel(config, "runtime-background-rollback");
+          tunnelRestored = true;
+        }
+        catch (failure) { failures.push(`Web tunnel restart failed: ${errorMessage(failure)}`); }
+      }
+      if (drained) {
+        try {
+          const resumed = await this.control(config, "resume");
+          if (resumed.status !== "ok" || resumed.accepting_turns !== true) {
+            throw new Error("daemon did not acknowledge resume");
+          }
+          await this.waitForProxy(config);
+          daemonResumed = true;
+        } catch (failure) { failures.push(`daemon resume failed: ${errorMessage(failure)}`); }
+      }
+      this.nativeBackground = tunnelStopped && !tunnelRestored && daemonResumed;
+      if (this.nativeBackground) this.stopTunnelMonitor();
+      else if (!tunnelRestored && config.mode === "full" && !this.tunnel) this.startTunnelMonitor(config);
+      throw new Error([errorMessage(error), ...failures].join("; "));
+    }
+  }
+
+  async resumeWebRuntime() {
+    if (!this.nativeBackground) return { status: "ready" };
+    if (this.backgroundTransition || this.startPromise || this.stopPromise || this.stopping) {
+      throw new Error("Runtime lifecycle operation is already in progress");
+    }
+    const transition = this.performResumeWebRuntime();
+    this.backgroundTransition = transition;
+    try { return await transition; } finally {
+      if (this.backgroundTransition === transition) this.backgroundTransition = null;
+    }
+  }
+
+  async performResumeWebRuntime() {
+    const config = this.readConfig();
+    if (!config || config.mode !== "full") throw new Error("Web runtime is not configured");
+    const daemon = this.daemon;
+    if (!daemon || !Number.isInteger(daemon.pid) || daemon.exitCode !== null
+      || daemon.signalCode !== null || !await this.proxyHealth(config, 2_000, daemon.pid, true)) {
+      throw new Error("Cannot resume Web routing without a verified owned daemon");
+    }
+    const drained = await this.acquireDrain(config);
+    try {
+      await this.startTunnel(config, "runtime-web-resume");
+      await this.waitForTunnel(config, TUNNEL_START_TIMEOUT_MS, "runtime-web-resume");
+      const resumed = await this.control(config, "resume");
+      if (resumed.status !== "ok" || resumed.accepting_turns !== true) {
+        throw new Error("daemon did not acknowledge resume after Web tunnel startup");
+      }
+      await this.waitForProxy(config);
+      this.nativeBackground = false;
+      this.tryWriteState("ready");
+      return { status: "ready", daemonPid: daemon.pid, tunnelPid: this.tunnel?.pid ?? null };
+    } catch (error) {
+      const failures = [];
+      if (this.tunnel) {
+        try { await this.stopTunnelGracefully(config); }
+        catch (failure) { failures.push(`Web tunnel stop failed: ${errorMessage(failure)}`); }
+      }
+      if (drained) {
+        try {
+          const resumed = await this.control(config, "resume");
+          if (resumed.status !== "ok" || resumed.accepting_turns !== true) {
+            throw new Error("daemon did not acknowledge resume");
+          }
+          await this.waitForProxy(config);
+        } catch (failure) { failures.push(`daemon resume failed: ${errorMessage(failure)}`); }
+      }
+      if (failures.length > 0) throw new Error(`${errorMessage(error)}; ${failures.join("; ")}`);
+      throw error;
+    }
   }
 
   async control(config, action, options = {}) {
@@ -1936,6 +2062,7 @@ class RuntimeSupervisor {
   }
 
   async stopForSetup() {
+    if (this.backgroundTransition) await this.backgroundTransition;
     if (this.stopPromise) return this.stopPromise;
     this.stopPromise = this.performStopForSetup();
     try {
@@ -1993,6 +2120,7 @@ class RuntimeSupervisor {
           }
         }
         this.clearState();
+        this.nativeBackground = false;
         return { status: "stopped" };
       }
       if (this.daemon && config) {
@@ -2015,6 +2143,7 @@ class RuntimeSupervisor {
         await this.shutdownDaemon(config);
       }
       this.clearState();
+      this.nativeBackground = false;
       return { status: "stopped" };
     } catch (error) {
       const compensationErrors = [];
@@ -2045,6 +2174,7 @@ class RuntimeSupervisor {
         }
       }
       this.tryWriteState(restoredReady ? "ready" : "failed", message);
+      if (restoredReady) this.nativeBackground = false;
       throw new Error(message);
     } finally {
       this.stopping = false;

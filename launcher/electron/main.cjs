@@ -73,6 +73,7 @@ const launchEnvironment = {
 };
 process.env.CODEX_CHATGPT_WEB_HOME = CORE_HOME;
 process.env.CODEX_HOME = LAUNCHER_PROFILE.codexHome;
+if (IS_DEV_PROFILE) delete process.env.CODEX_CHATGPT_WEB_TRUSTED_CODEX_HOMES;
 app.setName(LAUNCHER_PROFILE.displayName);
 if (process.platform === "win32") {
   app.setAppUserModelId(IS_DEV_PROFILE ? "dev.codexwebgpt.launcher.dev" : "dev.codexwebgpt.launcher");
@@ -91,6 +92,10 @@ let mainWindowReadyToShow = false;
 let mainWindowShowRequested = false;
 let startupFailed = false;
 let browserHost = null;
+let makeBrowserHost = null;
+let nativeBackground = false;
+let backgroundTransition = null;
+let backgroundLanguage = "en";
 let runtimeHost = null;
 // Renderer actions can arrive as soon as loadRenderer starts, before startup has acquired any
 // runtime operation lock. Keep setup/settings behind startup and its recovery as one boundary.
@@ -335,10 +340,19 @@ function nativeCopyFor(language) {
 }
 
 function updateTrayMenu(language) {
+  backgroundLanguage = language;
   if (!tray) return;
   const copy = nativeCopyFor(language);
   tray.setContextMenu(Menu.buildFromTemplate([
     { label: copy.openLauncher, click: () => showMainWindow() },
+    ...(!IS_DEV_PROFILE ? [
+      { label: language === "tr" ? (nativeBackground ? "Mod: Yalnız native köprü" : "Mod: Web ve native")
+        : (nativeBackground ? "Mode: Native bridge only" : "Mode: Web and native"), enabled: false },
+      { label: language === "tr" ? (nativeBackground ? "Web'i yeniden başlat" : "Web'i durdur, native köprüyü koru")
+        : (nativeBackground ? "Resume Web" : "Pause Web, keep native bridge"),
+        enabled: !backgroundTransition,
+        click: () => { void (nativeBackground ? restoreWebWorkspace() : enterNativeBackground()); } },
+    ] : []),
     { type: "separator" },
     { label: copy.quit, click: () => { void requestQuit(); } },
   ]));
@@ -359,6 +373,7 @@ function createTray(logger, language) {
 }
 
 function showMainWindow() {
+  if (nativeBackground) { void restoreWebWorkspace(); return; }
   // A Windows login launch may still be materializing the packaged runtime when the user opens
   // the desktop shortcut. Electron delivers `second-instance` immediately, before `createWindow`
   // has produced anything to show. Queue the request until a window exists, but do not block
@@ -471,7 +486,8 @@ function createWindow({ logger, stateStore, windowStatePath, startHidden }) {
   window.on("close", (event) => {
     if (quitting) return;
     event.preventDefault();
-    if (stateStore.read().keepRunningOnClose && tray) window.hide();
+    if (!IS_DEV_PROFILE && stateStore.read().keepNativeRouteOnClose && tray) void enterNativeBackground();
+    else if (stateStore.read().keepRunningOnClose && tray) window.hide();
     else void requestQuit();
   });
   window.on("closed", () => {
@@ -541,10 +557,11 @@ function syncBrowserPreferences(stateStore, config) {
   const biggerContextAvailable = typeof config?.solAvailable === "boolean";
   const biggerContextEnabled = config?.experimentalBiggerContext === true;
   const composerPredictionsEnabled = config?.composerPredictionsEnabled !== false;
-  const useSavedChats = config?.useSavedChats === true;
+  const useSavedChats = config?.useSavedChats !== false;
   const enabled = config?.experimentalFreshConversationPerTurn === true;
   const autoApproveToolCalls = config?.autoApproveToolCalls === true;
   const current = stateStore.read();
+  if (!browserHost) return current;
   if (runtimeHost?.currentOperation()) return current;
   const retentionChanged = current.experimentalFreshConversationPerTurn !== enabled || current.useSavedChats !== useSavedChats
     || current.experimentalBiggerContext !== biggerContextEnabled;
@@ -576,6 +593,9 @@ function registerIpc({ logger, stateStore }) {
   ]);
   const handle = (channel, handler) => registerLoggedIpc(ipcMain, logger, channel, async (...args) => {
     if (runtimeChannels.has(channel)) await runtimeStartup;
+    if (!browserHost && (runtimeChannels.has(channel) || channel.startsWith("launcher:browser-"))) {
+      throw new Error("Web runtime is paused or changing state. Resume Web from the system tray first.");
+    }
     return handler(...args);
   });
   handle("launcher:limits", () => limitsController.snapshot());
@@ -819,7 +839,7 @@ function registerIpc({ logger, stateStore }) {
       experimentalBiggerContext: false,
       experimentalSkillAttachments: false,
       experimentalFreshConversationPerTurn: false,
-      useSavedChats: false,
+      useSavedChats: true,
       autoApproveToolCalls: false,
       zeroRiskProEnabled: false,
     });
@@ -857,7 +877,7 @@ function registerIpc({ logger, stateStore }) {
       biggerContextAvailable: typeof runtimeHost.runtimeConfigSnapshot().config?.solAvailable === "boolean",
       zeroRiskProEnabled: runtimeHost.runtimeConfigSnapshot().config?.zeroRiskProEnabled === true,
       experimentalFreshConversationPerTurn: runtimeHost.runtimeConfigSnapshot().config?.experimentalFreshConversationPerTurn === true,
-      useSavedChats: runtimeHost.runtimeConfigSnapshot().config?.useSavedChats === true,
+      useSavedChats: runtimeHost.runtimeConfigSnapshot().config?.useSavedChats !== false,
       autoApproveToolCalls: runtimeHost.runtimeConfigSnapshot().config?.autoApproveToolCalls === true,
       ...(result.mode === "full" ? {
         mcpRuntimeInstalled: true,
@@ -902,7 +922,7 @@ function registerIpc({ logger, stateStore }) {
       biggerContextAvailable: typeof runtimeHost.runtimeConfigSnapshot().config?.solAvailable === "boolean",
       zeroRiskProEnabled: runtimeHost.runtimeConfigSnapshot().config?.zeroRiskProEnabled === true,
       experimentalFreshConversationPerTurn: runtimeHost.runtimeConfigSnapshot().config?.experimentalFreshConversationPerTurn === true,
-      useSavedChats: runtimeHost.runtimeConfigSnapshot().config?.useSavedChats === true,
+      useSavedChats: runtimeHost.runtimeConfigSnapshot().config?.useSavedChats !== false,
       autoApproveToolCalls: runtimeHost.runtimeConfigSnapshot().config?.autoApproveToolCalls === true,
       coreSetupComplete: true,
       codexCatalogVerified: IS_DEV_PROFILE,
@@ -1037,7 +1057,7 @@ function registerIpc({ logger, stateStore }) {
       browserInteractionMode: mode,
       biggerContextAvailable: typeof runtimeHost.runtimeConfigSnapshot().config?.solAvailable === "boolean",
       experimentalFreshConversationPerTurn: runtimeHost.runtimeConfigSnapshot().config?.experimentalFreshConversationPerTurn === true,
-      useSavedChats: runtimeHost.runtimeConfigSnapshot().config?.useSavedChats === true,
+      useSavedChats: runtimeHost.runtimeConfigSnapshot().config?.useSavedChats !== false,
       autoApproveToolCalls: runtimeHost.runtimeConfigSnapshot().config?.autoApproveToolCalls === true,
       ...(mode === "manual" ? { experimentalBiggerContext: false, experimentalSkillAttachments: false } : {}),
       ...(result.configured ? {
@@ -1051,7 +1071,7 @@ function registerIpc({ logger, stateStore }) {
     return { state, credentialsRequired: false, targetMode: mode };
   });
   handle("launcher:set-preference", (_event, key, value) => {
-    const ordinary = key === "keepRunningOnClose" || key === "showBrowserDuringTurns";
+    const ordinary = key === "keepRunningOnClose" || key === "keepNativeRouteOnClose" || key === "showBrowserDuringTurns";
     if (!ordinary) throw new Error("Unknown preference");
     return stateStore.update({ [key]: value === true });
   });
@@ -1096,12 +1116,76 @@ function registerIpc({ logger, stateStore }) {
   });
 }
 
+async function enterNativeBackground() {
+  if (nativeBackground) { mainWindow?.hide(); return; }
+  if (backgroundTransition) return backgroundTransition;
+  backgroundTransition = (async () => {
+    publishOperation({ name: "native-background", status: "running", message: "Pausing Web; keeping native routing" });
+    const host = browserHost;
+    try {
+      if (IS_DEV_PROFILE) throw new Error("Native background mode is unavailable in DEV");
+      const operation = runtimeHost?.currentOperation() || browserHost?.currentOperation();
+      if (operation) throw new Error(`Wait for ${operation} before pausing Web`);
+      browserHost = null;
+      await host?.persistSession();
+      await runtimeSupervisor.enterNativeBackground();
+      host?.destroy({ preserveControlDescriptor: true });
+      nativeBackground = true;
+      mainWindow?.hide();
+      publishOperation({ name: "native-background", status: "completed", message: "Web paused; native bridge retained" });
+    } catch (error) {
+      browserHost = host;
+      if (runtimeSupervisor.nativeBackground) {
+        try { await runtimeSupervisor.resumeWebRuntime(); }
+        catch (rollback) {
+          nativeBackground = true;
+          browserHost = null;
+          try { host?.destroy({ preserveControlDescriptor: true }); } catch {}
+          error = new Error(`${error.message || error}; Web recovery failed: ${rollback.message || rollback}`);
+        }
+      }
+      publishOperation({ name: "native-background", status: "failed", message: String(error.message || error) });
+    }
+  })();
+  try { await backgroundTransition; } finally {
+    backgroundTransition = null;
+    updateTrayMenu(backgroundLanguage);
+  }
+}
+
+async function restoreWebWorkspace() {
+  if (!nativeBackground) { showMainWindow(); return; }
+  if (backgroundTransition) return backgroundTransition;
+  backgroundTransition = (async () => {
+    publishOperation({ name: "web-resume", status: "running", message: "Resuming Web runtime" });
+    let host;
+    try {
+      host = makeBrowserHost();
+      await host.ready();
+      await runtimeSupervisor.resumeWebRuntime();
+      browserHost = host;
+      nativeBackground = false;
+      showMainWindow();
+      publishOperation({ name: "web-resume", status: "completed", message: "Web runtime resumed" });
+    } catch (error) {
+      try { host?.destroy({ preserveControlDescriptor: true }); }
+      catch (cleanup) { error = new Error(`${error.message || error}; browser cleanup failed: ${cleanup.message || cleanup}`); }
+      publishOperation({ name: "web-resume", status: "failed", message: String(error.message || error) });
+    }
+  })();
+  try { await backgroundTransition; } finally {
+    backgroundTransition = null;
+    updateTrayMenu(backgroundLanguage);
+  }
+}
+
 async function requestQuit() {
   if (shutdownInProgress || exitCommitted) {
     return { ok: false, message: "Launcher shutdown is already in progress" };
   }
   shutdownInProgress = true;
   try {
+    if (backgroundTransition) throw new Error("Wait for the background runtime transition before quitting");
     const activeOperation = runtimeHost?.currentOperation() || browserHost?.currentOperation();
     if (activeOperation) {
       throw new Error(`Wait for ${activeOperation} to finish before quitting Codex Web GPT`);
@@ -1211,7 +1295,7 @@ async function start() {
   });
   browserControl = await new BrowserControlServer({
     logger,
-    getBrowserHost: () => browserHost,
+    getBrowserHost: () => backgroundTransition || nativeBackground ? null : browserHost,
     getPreferences: () => syncBrowserPreferences(stateStore, runtimeHost.runtimeConfigSnapshot().config),
     resolveProxy: url => session.fromPartition(LAUNCHER_PROFILE.browserPartition).resolveProxy(url),
     limits: limitsController,
@@ -1252,14 +1336,14 @@ async function start() {
     && stateStore.read().browserInteractionMode !== configuredInteractionMode) {
     stateStore.update({ browserInteractionMode: configuredInteractionMode });
   }
-  browserHost = new BrowserHost({
+  makeBrowserHost = () => new BrowserHost({
     window: mainWindow,
     descriptorPath: BROWSER_DESCRIPTOR_PATH,
     cdpPort,
     control: browserControl.descriptor(),
     cancelTurn: IS_DEV_PROFILE ? undefined : (traceId, reason) => runtimeSupervisor.cancelBrowserTurn(traceId, reason),
     getConnectorName: () => runtimeHost.browserConnectorName(),
-    getUseSavedChats: () => runtimeHost.runtimeConfigSnapshot().config?.useSavedChats === true,
+    getUseSavedChats: () => runtimeHost.runtimeConfigSnapshot().config?.useSavedChats !== false,
     helper: { executable: process.execPath, script: BROWSER_HELPER_PATH },
     logger,
     loginWithPasskey: onProgress => runtimeHost.capturePasskeyLogin(onProgress),
@@ -1269,6 +1353,7 @@ async function start() {
     showWindow: showMainWindow,
     getBrowserInteractionMode: () => stateStore.read().browserInteractionMode,
   });
+  browserHost = makeBrowserHost();
   await browserHost.ready();
   const updaterRuntimeRoot = runtimeRootProvider();
   updateController = createUpdateController({
@@ -1358,7 +1443,7 @@ async function start() {
       composerPredictionsEnabled: config?.composerPredictionsEnabled !== false,
       experimentalSkillAttachments: config?.experimentalSkillAttachments === true,
       experimentalFreshConversationPerTurn: config?.experimentalFreshConversationPerTurn === true,
-      useSavedChats: config?.useSavedChats === true,
+      useSavedChats: config?.useSavedChats !== false,
       autoApproveToolCalls: config?.autoApproveToolCalls === true,
       zeroRiskProEnabled: config?.zeroRiskProEnabled === true,
     });
@@ -1387,7 +1472,7 @@ async function start() {
         experimentalBiggerContext: runtimeHost.runtimeConfigSnapshot().config?.experimentalBiggerContext === true,
         experimentalSkillAttachments: runtimeHost.runtimeConfigSnapshot().config?.experimentalSkillAttachments === true,
         experimentalFreshConversationPerTurn: runtimeHost.runtimeConfigSnapshot().config?.experimentalFreshConversationPerTurn === true,
-        useSavedChats: runtimeHost.runtimeConfigSnapshot().config?.useSavedChats === true,
+        useSavedChats: runtimeHost.runtimeConfigSnapshot().config?.useSavedChats !== false,
         autoApproveToolCalls: runtimeHost.runtimeConfigSnapshot().config?.autoApproveToolCalls === true,
         zeroRiskProEnabled: runtimeHost.runtimeConfigSnapshot().config?.zeroRiskProEnabled === true,
         ...(upgrade.mode === "full" ? {
@@ -1414,7 +1499,7 @@ async function start() {
       const composerPredictionsEnabled = configuredRuntime.config?.composerPredictionsEnabled !== false;
       const experimentalSkillAttachments = configuredRuntime.config?.experimentalSkillAttachments === true;
       const experimentalFreshConversationPerTurn = configuredRuntime.config?.experimentalFreshConversationPerTurn === true;
-      const useSavedChats = configuredRuntime.config?.useSavedChats === true;
+      const useSavedChats = configuredRuntime.config?.useSavedChats !== false;
       const autoApproveToolCalls = configuredRuntime.config?.autoApproveToolCalls === true;
       const zeroRiskProEnabled = configuredRuntime.config?.zeroRiskProEnabled === true;
       const saved = stateStore.read();
@@ -1444,7 +1529,7 @@ async function start() {
         composerPredictionsEnabled: config.composerPredictionsEnabled !== false,
         experimentalSkillAttachments: config.experimentalSkillAttachments === true,
         experimentalFreshConversationPerTurn: config.experimentalFreshConversationPerTurn === true,
-        useSavedChats: config.useSavedChats === true,
+        useSavedChats: config.useSavedChats !== false,
         autoApproveToolCalls: config.autoApproveToolCalls === true,
         zeroRiskProEnabled: config.zeroRiskProEnabled === true,
         ...(runtime.bridgeRouteChanged ? {

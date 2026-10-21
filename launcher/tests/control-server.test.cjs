@@ -236,6 +236,30 @@ test("native proxy resolution requires owner auth, restricts targets, and works 
   } finally { await server.close(); }
 });
 
+test("paused Web fails explicitly while native proxy resolution remains available", async () => {
+  const server = await new BrowserControlServer({
+    logger: { info() {}, warn() {}, error() {} },
+    getBrowserHost: () => null,
+    getPreferences: () => { throw new Error("Paused browser must not read preferences"); },
+    resolveProxy: async () => "DIRECT",
+  }).start();
+  const { endpoint, token } = server.descriptor();
+  const send = (route, body) => fetch(`${endpoint}${route}`, {
+    method: "POST", headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  try {
+    const web = await send("/v1/turn/start", {});
+    assert.equal(web.status, 503);
+    const failure = await web.json();
+    assert.equal(failure.code, "web_runtime_unavailable");
+    assert.match(failure.error, /Open Codex Web GPT/);
+    const native = await send("/v1/network/resolve-proxy", { url: "https://chatgpt.com/backend-api/codex/responses" });
+    assert.equal(native.status, 200);
+    assert.deepEqual(await native.json(), { proxy: "DIRECT" });
+  } finally { await server.close(); }
+});
+
 test("browser control server authenticates and owns turn visibility", async () => {
   const calls = [];
   const logs = [];
@@ -647,6 +671,43 @@ test("browser control server reports a missing retained conversation as a typed 
     assert.deepEqual(await response.json(), {
       error: "The retained ChatGPT conversation is no longer available",
       code: "retained_conversation_unavailable",
+    });
+  } finally {
+    await server.close();
+  }
+});
+
+test("browser control server reports a lost running helper as a typed conflict", async () => {
+  const host = {
+    browserInteractionMode: () => "automatic",
+    beginTurn: () => {
+      const error = new Error("The running ChatGPT turn lost its helper");
+      error.code = "turn_owner_lost";
+      throw error;
+    },
+  };
+  const server = await new BrowserControlServer({
+    logger: { info() {}, warn() {} },
+    getBrowserHost: () => host,
+    getPreferences: () => ({ showBrowserDuringTurns: false }),
+  }).start();
+  const descriptor = server.descriptor();
+  try {
+    const response = await fetch(`${descriptor.endpoint}/v1/turn/start`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${descriptor.token}`, "content-type": "application/json" },
+      body: JSON.stringify({
+        phase: "start",
+        traceId: "missing123456",
+        helperPid: process.pid,
+        conversationKey: "a".repeat(64),
+        requireRetainedConversation: true,
+      }),
+    });
+    assert.equal(response.status, 409);
+    assert.deepEqual(await response.json(), {
+      error: "The running ChatGPT turn lost its helper",
+      code: "turn_owner_lost",
     });
   } finally {
     await server.close();

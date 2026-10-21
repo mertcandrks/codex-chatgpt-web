@@ -100,6 +100,224 @@ test("Linux autostart escapes desktop-entry field codes in executable paths", ()
   assert.match(entry, /"\/home\/example\/100%% ready\/Codex Web GPT\.AppImage" --hidden/);
 });
 
+test("native background stops only the Web tunnel and resumes the owned daemon", async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "codex-web-gpt-native-background-"));
+  const config = launcherConfig(path.join(root, "launcher-browser.json"), { mode: "full", tunnel: {
+    binaryPath: path.join(root, "tunnel-client"), tunnelId: "tunnel_0123456789abcdef0123456789abcdef",
+    runtimeKeyFile: path.join(root, "runtime.key"), profileDir: path.join(root, "profile"),
+    profileName: "test", alias: "test",
+  } });
+  fs.writeFileSync(path.join(root, "config.json"), JSON.stringify(config));
+  const supervisor = new RuntimeSupervisor({
+    app: { getVersion: () => "0.2.0", isPackaged: false },
+    logger: { info() {}, warn() {}, error() {} },
+    sourceRoot: root,
+    coreHome: root,
+    browserDescriptorPath: config.browserHostDescriptorPath,
+  });
+  const calls = [];
+  supervisor.daemon = { pid: 1234, exitCode: null, signalCode: null };
+  supervisor.tunnel = { pid: 5678, exitCode: null, signalCode: null };
+  supervisor.proxyHealth = async () => true;
+  supervisor.acquireDrain = async () => { calls.push("drain"); return true; };
+  supervisor.stopTunnelGracefully = async () => { calls.push("stop-tunnel"); supervisor.tunnel = null; };
+  supervisor.control = async (_config, action) => { calls.push(action); return { status: "ok", accepting_turns: action === "resume" }; };
+  supervisor.waitForProxy = async () => { calls.push("proxy-ready"); };
+  supervisor.tryWriteState = () => true;
+  supervisor.stopTunnelMonitor = () => { calls.push("monitor-stop"); };
+  supervisor.startTunnel = async () => { calls.push("start-tunnel"); supervisor.tunnel = { pid: 5678, exitCode: null, signalCode: null }; };
+  supervisor.waitForTunnel = async () => { calls.push("tunnel-ready"); };
+  try {
+    assert.deepEqual(await supervisor.enterNativeBackground(), { status: "native-background", daemonPid: 1234 });
+    assert.equal(supervisor.nativeBackground, true);
+    assert.equal(supervisor.daemon.pid, 1234);
+    assert.equal(supervisor.tunnel, null);
+    assert.deepEqual(calls.slice(-4), ["drain", "stop-tunnel", "resume", "proxy-ready"]);
+    assert.deepEqual(await supervisor.resumeWebRuntime(), { status: "ready", daemonPid: 1234, tunnelPid: 5678 });
+    assert.equal(supervisor.nativeBackground, false);
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});
+
+test("native background rolls back tunnel stop failure and never cancels active turns", async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "codex-web-gpt-native-background-rollback-"));
+  const config = launcherConfig(path.join(root, "launcher-browser.json"), { mode: "full", tunnel: {
+    binaryPath: path.join(root, "tunnel-client"), tunnelId: "tunnel_0123456789abcdef0123456789abcdef",
+    runtimeKeyFile: path.join(root, "runtime.key"), profileDir: path.join(root, "profile"),
+    profileName: "test", alias: "test",
+  } });
+  fs.writeFileSync(path.join(root, "config.json"), JSON.stringify(config));
+  const supervisor = new RuntimeSupervisor({
+    app: { getVersion: () => "0.2.0", isPackaged: false },
+    logger: { info() {}, warn() {}, error() {} },
+    sourceRoot: root,
+    coreHome: root,
+    browserDescriptorPath: config.browserHostDescriptorPath,
+  });
+  const calls = [];
+  supervisor.daemon = { pid: 1234, exitCode: null, signalCode: null };
+  supervisor.tunnel = { pid: 5678, exitCode: null, signalCode: null };
+  supervisor.proxyHealth = async () => true;
+  supervisor.acquireDrain = async () => { calls.push("drain"); return true; };
+  supervisor.stopTunnelGracefully = async () => { calls.push("stop-tunnel"); throw new Error("active tunnel turn"); };
+  supervisor.startTunnel = async () => { calls.push("start-tunnel"); };
+  supervisor.control = async (_config, action) => { calls.push(action); return { status: "ok", accepting_turns: true }; };
+  supervisor.waitForProxy = async () => { calls.push("proxy-ready"); };
+  supervisor.startTunnelMonitor = () => { calls.push("monitor-start"); };
+  supervisor.stopTunnelMonitor = () => { calls.push("monitor-stop"); };
+  try {
+    await assert.rejects(supervisor.enterNativeBackground(), /active tunnel turn/);
+    assert.equal(supervisor.nativeBackground, false);
+    assert.deepEqual(calls.slice(-3), ["stop-tunnel", "resume", "proxy-ready"]);
+    assert.equal(calls.includes("cancel-turns"), false);
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});
+
+test("native daemon recovery does not wait for the intentionally stopped tunnel", async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "codex-web-gpt-native-daemon-recovery-"));
+  const config = launcherConfig(path.join(root, "launcher-browser.json"), { mode: "full", tunnel: {
+    binaryPath: path.join(root, "tunnel-client"), tunnelId: "tunnel_0123456789abcdef0123456789abcdef",
+    runtimeKeyFile: path.join(root, "runtime.key"), profileDir: path.join(root, "profile"),
+    profileName: "test", alias: "test",
+  } });
+  fs.writeFileSync(path.join(root, "config.json"), JSON.stringify(config));
+  const supervisor = new RuntimeSupervisor({
+    app: { getVersion: () => "0.2.0", isPackaged: false }, logger: { info() {}, warn() {}, error() {} },
+    sourceRoot: root, coreHome: root, browserDescriptorPath: config.browserHostDescriptorPath,
+  });
+  const calls = [];
+  supervisor.nativeBackground = true;
+  supervisor.daemon = { pid: 1234, exitCode: null, signalCode: null };
+  supervisor.tunnel = null;
+  supervisor.startDaemon = async () => { calls.push("daemon-start"); };
+  supervisor.waitForProxy = async () => { calls.push("native-ready"); };
+  supervisor.waitForTunnel = async () => { throw new Error("must not wait for tunnel"); };
+  supervisor.tryWriteState = () => true;
+  try {
+    await supervisor.recover("daemon");
+    assert.deepEqual(calls, ["daemon-start", "native-ready"]);
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});
+
+test("native background refuses an in-flight tunnel recovery and suppresses future tunnel recovery", async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "codex-web-gpt-native-recovery-race-"));
+  const supervisor = new RuntimeSupervisor({
+    app: { getVersion: () => "0.2.0", isPackaged: false }, logger: { info() {}, warn() {}, error() {} },
+    sourceRoot: root, coreHome: root, browserDescriptorPath: path.join(root, "launcher-browser.json"),
+  });
+  try {
+    const timer = setTimeout(() => {}, 60_000);
+    supervisor.restartTimers.tunnel = timer;
+    await assert.rejects(supervisor.enterNativeBackground(), /Wait for runtime recovery/);
+    clearTimeout(timer);
+    supervisor.restartTimers.tunnel = null;
+    supervisor.nativeBackground = true;
+    supervisor.scheduleRecovery("tunnel");
+    assert.equal(supervisor.restartTimers.tunnel, null);
+    assert.deepEqual(supervisor.restartHistory.tunnel, []);
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});
+
+test("failed Web resume restores native service and restarts tunnel monitoring", async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "codex-web-gpt-native-resume-rollback-"));
+  const config = launcherConfig(path.join(root, "launcher-browser.json"), { mode: "full", tunnel: {
+    binaryPath: path.join(root, "tunnel-client"), tunnelId: "tunnel_0123456789abcdef0123456789abcdef",
+    runtimeKeyFile: path.join(root, "runtime.key"), profileDir: path.join(root, "profile"),
+    profileName: "test", alias: "test",
+  } });
+  fs.writeFileSync(path.join(root, "config.json"), JSON.stringify(config));
+  const supervisor = new RuntimeSupervisor({
+    app: { getVersion: () => "0.2.0", isPackaged: false }, logger: { info() {}, warn() {}, error() {} },
+    sourceRoot: root, coreHome: root, browserDescriptorPath: config.browserHostDescriptorPath,
+  });
+  const calls = [];
+  let resumes = 0;
+  supervisor.nativeBackground = true;
+  supervisor.daemon = { pid: 1234, exitCode: null, signalCode: null };
+  supervisor.proxyHealth = async () => true;
+  supervisor.acquireDrain = async () => true;
+  supervisor.startTunnel = async () => {
+    calls.push("start-tunnel");
+    supervisor.tunnel = { pid: 5678, exitCode: null, signalCode: null };
+    supervisor.startTunnelMonitor = () => calls.push("monitor-start");
+  };
+  supervisor.stopTunnelGracefully = async () => { calls.push("rollback-stop-tunnel"); supervisor.tunnel = null; };
+  supervisor.waitForTunnel = async () => { calls.push("tunnel-ready"); };
+  supervisor.control = async (_config, action) => {
+    if (action !== "resume") return { status: "ok" };
+    resumes += 1;
+    return { status: resumes === 1 ? "failed" : "ok", accepting_turns: resumes > 1 };
+  };
+  supervisor.waitForProxy = async () => { calls.push("native-ready"); };
+  try {
+    await assert.rejects(supervisor.resumeWebRuntime(), /daemon did not acknowledge resume/);
+    assert.equal(supervisor.nativeBackground, true);
+    assert.equal(supervisor.tunnel, null);
+    assert.deepEqual(calls, ["start-tunnel", "tunnel-ready", "rollback-stop-tunnel", "native-ready"]);
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});
+
+test("native-background rollback keeps the restarted tunnel monitor active", async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "codex-web-gpt-native-enter-rollback-"));
+  const config = launcherConfig(path.join(root, "launcher-browser.json"), { mode: "full", tunnel: {
+    binaryPath: path.join(root, "tunnel-client"), tunnelId: "tunnel_0123456789abcdef0123456789abcdef",
+    runtimeKeyFile: path.join(root, "runtime.key"), profileDir: path.join(root, "profile"),
+    profileName: "test", alias: "test",
+  } });
+  fs.writeFileSync(path.join(root, "config.json"), JSON.stringify(config));
+  const supervisor = new RuntimeSupervisor({
+    app: { getVersion: () => "0.2.0", isPackaged: false }, logger: { info() {}, warn() {}, error() {} },
+    sourceRoot: root, coreHome: root, browserDescriptorPath: config.browserHostDescriptorPath,
+  });
+  const calls = [];
+  let resumes = 0;
+  supervisor.daemon = { pid: 1234, exitCode: null, signalCode: null };
+  supervisor.tunnel = { pid: 5678, exitCode: null, signalCode: null };
+  supervisor.proxyHealth = async () => true;
+  supervisor.acquireDrain = async () => true;
+  supervisor.stopTunnelGracefully = async () => { supervisor.tunnel = null; };
+  supervisor.startTunnel = async () => {
+    supervisor.tunnel = { pid: 5678, exitCode: null, signalCode: null };
+    calls.push("tunnel-started");
+    supervisor.startTunnelMonitor(config);
+  };
+  supervisor.startTunnelMonitor = () => calls.push(`monitor-start:${supervisor.nativeBackground}`);
+  supervisor.stopTunnelMonitor = () => {};
+  supervisor.control = async (_config, action) => {
+    if (action !== "resume") return { status: "ok" };
+    resumes += 1;
+    return { status: resumes === 1 ? "failed" : "ok", accepting_turns: resumes > 1 };
+  };
+  supervisor.waitForProxy = async () => {};
+  supervisor.tryWriteState = () => true;
+  try {
+    await assert.rejects(supervisor.enterNativeBackground(), /daemon did not acknowledge resume/);
+    assert.equal(supervisor.nativeBackground, false);
+    assert.ok(supervisor.tunnel);
+    assert.deepEqual(calls, ["tunnel-started", "monitor-start:true"]);
+    supervisor.scheduleRecovery("tunnel");
+    assert.ok(supervisor.restartTimers.tunnel, "normal tunnel recovery is enabled after rollback");
+    clearTimeout(supervisor.restartTimers.tunnel);
+    supervisor.restartTimers.tunnel = null;
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});
+
+test("stopping the full runtime clears native background mode", async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "codex-web-gpt-native-stop-reset-"));
+  const config = launcherConfig(path.join(root, "launcher-browser.json"));
+  fs.writeFileSync(path.join(root, "config.json"), JSON.stringify(config));
+  const supervisor = new RuntimeSupervisor({
+    app: { getVersion: () => "0.2.0", isPackaged: false }, logger: { info() {}, warn() {}, error() {} },
+    sourceRoot: root, coreHome: root, browserDescriptorPath: config.browserHostDescriptorPath,
+  });
+  supervisor.nativeBackground = true;
+  supervisor.readState = () => null;
+  supervisor.proxyHealth = async () => false;
+  try {
+    assert.deepEqual(await supervisor.performStopForSetup(), { status: "stopped" });
+    assert.equal(supervisor.nativeBackground, false);
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});
+
 test("Linux autostart follows the stable installer wrapper across app updates", () => {
   const previous = process.env.CODEX_WEB_GPT_LAUNCHER_EXECUTABLE;
   process.env.CODEX_WEB_GPT_LAUNCHER_EXECUTABLE = "/home/example/.local/bin/codex-web-gpt";

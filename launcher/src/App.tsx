@@ -1909,11 +1909,21 @@ function SettingsSurface({
         <SettingRow body={devProfile ? copy.devKeepRunningBody : copy.keepRunningOnCloseBody} label={copy.keepRunningOnClose}>
           <Switch
             checked={snapshot.state.keepRunningOnClose}
+            disabled={snapshot.state.keepNativeRouteOnClose}
             onChange={(checked) => void api!.setPreference("keepRunningOnClose", checked)
               .then(updateState)
               .catch((cause) => setError(messageOf(cause)))}
           />
         </SettingRow>
+        {!devProfile ? <SettingRow body={copy.keepNativeRouteOnCloseBody} label={copy.keepNativeRouteOnClose}>
+          <Switch
+            checked={snapshot.state.keepNativeRouteOnClose}
+            disabled={busy || !snapshot.state.mcpRuntimeInstalled}
+            onChange={(checked) => void api!.setPreference("keepNativeRouteOnClose", checked)
+              .then(updateState)
+              .catch((cause) => setError(messageOf(cause)))}
+          />
+        </SettingRow> : null}
         <SettingRow body={copy.showDuringTurnsBody} label={copy.showDuringTurns}>
           <Switch
             checked={snapshot.state.showBrowserDuringTurns}

@@ -25,6 +25,7 @@ test("launcher quit restores native routing before stopping the bridge and never
     const calls = [];
     const context = vm.createContext({
       IS_DEV_PROFILE: scenario === "development", shutdownInProgress: false, exitCommitted: false, quitting: false,
+      backgroundTransition: null,
       runtimeHost: { currentOperation: () => null, restoreBridgeRoute: async name => {
         calls.push(name);
         if (scenario === "restore-failure") throw new Error("route changed externally");
@@ -154,7 +155,7 @@ test("a foreground request shows an existing window even if ready-to-show never 
   );
   const calls = [];
   const context = vm.createContext({ mainWindow: null, mainWindowReadyToShow: false,
-    mainWindowShowRequested: false, startupFailed: false });
+    mainWindowShowRequested: false, startupFailed: false, nativeBackground: false });
   vm.runInContext(showMainWindow, context);
   context.showMainWindow();
   assert.equal(context.mainWindowShowRequested, true, "request survives creation delay");
@@ -230,7 +231,7 @@ test("startup failure stays visible on another launch and Retry exits the failed
   const window = { isDestroyed: () => false, isMinimized: () => false,
     show: () => { visible = true; }, focus() {}, };
   const sandbox = {
-    mainWindow: window, mainWindowReadyToShow: false, mainWindowShowRequested: false,
+    mainWindow: window, mainWindowReadyToShow: false, mainWindowShowRequested: false, nativeBackground: false,
     startupFailed: false, quitting: false,
     browserHost: { destroy: () => events.push("destroy") },
     browserControl: { close: async () => events.push("control closed") },
@@ -667,7 +668,7 @@ test("fresh-conversation snapshot uses runtime configuration and mode switching 
 test("changing Bigger Context retires ready automatic chats before a previous mode can reuse them", () => {
   const vm = require("node:vm");
   const state = { experimentalBiggerContext: false, experimentalFreshConversationPerTurn: false,
-    useSavedChats: false, autoApproveToolCalls: false, biggerContextAvailable: true };
+    useSavedChats: true, autoApproveToolCalls: false, biggerContextAvailable: true };
   const tabs = new Map([
     ["old", { status: "ready", conversationKey: "old-luna", interactionMode: "automatic" }],
     ["active", { status: "running", conversationKey: "running", interactionMode: "automatic" }],
